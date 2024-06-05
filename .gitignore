@@ -1,3 +1,6 @@
+# ignore all . folders but include . files
+.*/
+
 # History files
 .Rhistory
 .Rapp.history
