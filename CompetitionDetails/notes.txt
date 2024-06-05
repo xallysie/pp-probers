@@ -1,0 +1,23 @@
+
+We collected n=200 ratings of 15 different groups. 
+3000 participants (Mage = 39.88, SDage = 13.06; 1554 female, 1393 male, 41 non-binary, 12 undisclosed; 2326 White, 330 Black, 212 East Asian, 80 South Asian, 42 American Indian, 10 Native Hawaiian) living in the United States were recruited from Connect for monetary compensation.
+
+n=134 of each group is available in the training data. 
+
+In the data, we have created all latent factors from the scales already.
+We explain the process here in case it informs teams' decisions in any way, or they wish to create latent factors in another way.
+
+First, for every target group separately, we reversed items requiring reversal, and then fit a factor model in lavaan in R.
+We then merged all the data for every target group.
+We then randomly assigned 67% of the 200 observations of each target group to the training and 33% to the test set.
+
+Below is an example of creating the "symbolic" latent factor, representing symbolic threat in the data. Notice that item 3 is reversed ("sThreat3R" in the data).
+
+library(lavaan)
+
+symbolic<- '
+fsymbolic =~ sThreat1 + sThreat2 + sThreat3R + sThreat4'
+
+fitsymbolic<- cfa(symbolic, data=d, bootstrap=5000, missing="ml")
+summary (fitsymbolic, fit.measures=TRUE, standardized=TRUE)
+d$symbolic <- lavaan::lavPredict(fitsymbolic, method="regression")
