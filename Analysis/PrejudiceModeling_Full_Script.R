@@ -376,8 +376,30 @@ registerDoParallel(cl)
 load("train_data_transformations_V1.Rda")
 
 variables_to_consider <- read_csv("output/ElasticNet_NOTmultilevel_ParameterWeights_Transformed_V1.csv") %>%
-  filter(ParamWeight != 0) %>%
-  filter(abs(ParamWeight) >= 0.005)
+  filter(ParamWeight != 0) #%>%
+  #filter(abs(ParamWeight) >= 0.005)
+
+train_data_trans_subset <- train_data_trans %>%
+  select(Outgroup, bias, all_of(variables_to_consider$Variable))
+
+# try unweighted model
+test_unweighted <- single_run(
+  data = train_data_trans_subset,
+  outcome_var = "bias", 
+  formula_str = paste("bias ~", paste(variables_to_consider$Variable, collapse = " + ")),
+  model_function = ols_regression_fit,
+  cv_function = evaluate_models_kfold,
+  description = "bias_ols_unweighted with 55 vars retained from elastic net", 
+  k=5)
+# try multilevel unweighted model
+test_unweighted <- single_run(
+  data = train_data_trans_subset,
+  outcome_var = "bias", 
+  formula_str = paste("bias ~", paste(variables_to_consider$Variable, collapse = " + "), paste(" + ("), paste(variables_to_consider$Variable, collapse = " + "), paste(" | Outgroup)")),
+  model_function = lmer_regression_fit,
+  cv_function = evaluate_models_kfold,
+  description = "bias_lmer_unweighted with 55 vars retained from elastic net and 55 random intercepts", 
+  k=5)
 
 # generate weight ranges
 generate_weight_range <- function(start_val, step = 0.1, range = 0.10) {
@@ -399,10 +421,6 @@ generate_parameter_grid <- function(ranges, current_combination = list(), index 
   }
 }
 all_param_comboss <- generate_parameter_grid(weight_ranges)
-
-
-train_data_trans_subset <- train_data_trans %>%
-  select(Outgroup, bias, all_of(variables_to_consider$Variable))
 
 parameter_grid <- list(
   list(formula_str = "bias ~ generalized + symbolic + contact_quality + contact_friendsz + identification_selfinvestment", 
