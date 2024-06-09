@@ -1,5 +1,6 @@
 # ignore all . folders but include . files
 .*/
+.DS_Store
 
 # History files
 .Rhistory
