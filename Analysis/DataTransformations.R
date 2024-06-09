@@ -14,7 +14,7 @@ options(scipen=999,digits=6)
 
 # import training data
 train_data <- read_csv("../TrainingData/train.csv") %>%
-  dplyr::dplyr::select(Outgroup, bias, outgroup_att, everything())
+  dplyr::select(Outgroup, bias, outgroup_att, everything())
 
 # fix training data by recoding reversed values
 train_data <- train_data %>%
@@ -50,12 +50,12 @@ latent_vars_key <- c(
 
 # remove variables that were used to construct the outcome variables (bias and outgroup_att)
 train_data <- train_data %>%
-  dplyr::dplyr::select(everything(), -WarmIG, -WarmOG, -PositiveIG, -PositiveOG, -LikeIG, -LikeOG, -diff_warm, -diff_pos, -diff_like, -sThreat3R, -agreeable1r) %>%
+  dplyr::select(everything(), -WarmIG, -WarmOG, -PositiveIG, -PositiveOG, -LikeIG, -LikeOG, -diff_warm, -diff_pos, -diff_like, -sThreat3R, -agreeable1r) %>%
   mutate(Outgroup = as.factor(Outgroup))
 
 # create matrix of predictors, removing outcome variables and cluster(Outgroup)
 predictors <- train_data %>%
-  dplyr::dplyr::select(-bias, -outgroup_att, -Outgroup) %>%
+  dplyr::select(-bias, -outgroup_att, -Outgroup) %>%
   as.matrix()
 
 outcome_bias <- train_data[["bias"]]
@@ -129,11 +129,92 @@ train_data_log <- train_data_log %>%
 train_data_trans <- cbind(train_data_gmc, interactions) %>%
   cbind(train_data_log)
 
+# 6. similarities between variables ---------------------------------------
+
+# create similarity metrics between different variables to try to identify
+# response profiles
+
+# compute similarity based on mahalanobis distance between pairwise variables
+tidy_mahalanobis <- function(...) {
+  variables <- cbind(...)
+  if (sum(is.na(variables)) != 0)
+  {
+    stop("Your data has some NAs, which will cause `tidy_mahalnobis` to crash. Try removing NAs before running `tidy_mahalanobis`.")
+  }
+  # return 0 if there are too few points
+  if(nrow(variables) < 5) {
+    return(rep(0, nrow(variables)))
+  }
+  # *Tips hat to Joe Fruehwald via Renwick for this line of code.*
+  t_params <- MASS::cov.trob(variables)
+  mahalanobis(variables,
+              center = t_params$center,
+              cov    = t_params$cov)
+}
+
+train_data_trans %>%
+  mutate(d_mahalanobis = tidy_mahalanobis(symbolic, contact_friendsz)) %>%
+  select(d_mahalanobis) %>% unlist() %>% mean()
+
+# loop through each pair of predictors and compute mahalanobis distance
+#mahalanobis_distances <- data.frame(matrix(nrow=2010))
+mahalanobis_distances <- data.frame(matrix(nrow=nrow(predictors_trans)))
+for (i in seq_along(predictors_trans)) {
+  for (j in seq_along(predictors_trans)) {
+    if (i < j) {  # to avoid duplicate pairs
+      col1 <- names(predictors_trans)[i]
+      col2 <- names(predictors_trans)[j]
+      var_pair <- paste0(col1, "~", col2, "_mD_log")
+      tryCatch({
+        # compute mahalanobis distance, return NaN if covmatrix is singular
+        mahalanobis_distances[[var_pair]] <- mahalanobis(predictors_trans[,c(col1,col2)],
+                                                         center = colMeans(predictors_trans[,c(col1,col2)]),
+                                                         cov = cov(predictors_trans[,c(col1,col2)]))
+      }, error = function(e){
+        # handle error if covariance matrix is singular
+        mahalanobis_distances[[var_pair]] <- NaN
+      })
+      tryCatch({
+        mahalanobis_distances[[var_pair]] <- log10(mahalanobis_distances[[var_pair]])
+      }, error = function(e){
+        mahalanobis_distances[[var_pair]] <- NaN
+      })
+    }
+  }
+}
+mahalanobis_distances <- mahalanobis_distances[,-1] # remove NA column
+# remove cols NaN values
+mahalanobis_distances_with_NaN <- mahalanobis_distances %>%
+  summarise_all(~ any(is.na(.))) %>%
+  unlist() %>%
+  which()
+
+# compute variance in responses for each participant
+individual_variances <- predictors_trans %>%
+  rowwise() %>%
+  mutate(item_variances = var(c_across(everything()))) %>% select(item_variances) %>%
+  ungroup() %>%
+  mutate(item_variances_gmc = item_variances - mean(item_variances))
+
+
+# load changes from cubed/squared vers
+load("train_data_transformations_raised.Rdata")
+train_data_extended <- train_data_extended[,66:76]
+
+
+# combine these transformed variables
+train_data_trans <- cbind(train_data_gmc, interactions) %>%
+  cbind(train_data_log) %>% 
+  cbind(mahalanobis_distances) %>%
+  cbind(individual_variances) %>%
+  cbind(train_data_extended)
+
+
 # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~#
 
 # now let's create "multilevel model"-friendly versions of this!
 
-# 4. cluster-mean-center variables ----------------------------------------
+# 7. cluster-mean-center variables ----------------------------------------
 
 train_data_trans_ml <- train_data
 
@@ -156,7 +237,7 @@ train_data_cmc <- train_data_cmc %>% dplyr::select(Outgroup, bias, outgroup_att,
 predictors_cmc <- train_data_cmc %>% dplyr::select(-Outgroup, -bias, -outgroup_att, contains("_cm"), contains("_cwc"))
 
 
-# 5. two-way interactions (cluster-mean-centered) -------------------------
+# 8. two-way interactions (cluster-mean-centered) -------------------------
 
 # create 2-way interactions between all unique pairs of variables (cluster means)
 interactions_cm <- data.frame(matrix(nrow=2010))
@@ -194,7 +275,9 @@ train_data_trans_ml <- cbind(train_data_cmc, interactions) %>%
   cbind(train_data_log)
 
 
+
+
 # save data ---------------------------------------------------------------
 
-save(train_data_trans, file="train_data_transformations_V1.Rda")
+save(train_data_trans, file="train_data_transformations_V2_with2653vars.Rda")
 save(train_data_trans_ml, file="train_data_transformations_V1_multilevel.Rda")

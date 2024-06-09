@@ -30,6 +30,11 @@ train_data <- train_data %>%
   mutate(sThreat3 = 8 - sThreat3,
          Agreeable1 = 6 - Agreeable1)
 
+# how many n per group? (K = 15, n=134, balanced)
+train_data %>% select(Outgroup) %>%
+  group_by(Outgroup) %>%
+  summarise(n = n(), .groups = "drop")
+
 # outcome variables
 # (1) outgroup_att = factor score calculated from WarmOG, PositiveOG, LikeOG
 # (2) bias = factor score calculated from WarmIG-WarmOG, PositiveIG-PositiveeOG, LikeIG-LikeOG (positive score is more ingroup positivity bias)
@@ -84,19 +89,37 @@ baseline_model <- train_data %>%
 # here are the baseline values to beat for bias
 
 # r-squared
-baseline_model %>% summarise(sum(SS_regress_bias)/sum(SS_total_bias)) # R_squared for Bias: .382
+baseline_model %>% 
+  group_by(Outgroup) %>%
+  summarise(sum(SS_regress_bias)/sum(SS_total_bias)) %>%
+  ungroup() %>% select(-Outgroup) %>% unlist() %>% mean() # R_squared for Bias: .396
 # adjusted r-squared***
-baseline_model %>% summarise(1 - ((1-(sum(SS_regress_bias)/sum(SS_total_bias)))*(nrow(baseline_model)-1)/(nrow(baseline_model)-5-1))) # Adjusted R-Sq: .380
+baseline_model %>% 
+  group_by(Outgroup) %>%
+  summarise(1 - ((1-(sum(SS_regress_bias)/sum(SS_total_bias)))*(nrow(baseline_model)-1)/(nrow(baseline_model)-5-1))) %>%
+  ungroup() %>% select(-Outgroup) %>% unlist() %>% mean() # Adjusted R-Sq: .394
 # root mean squared error***
-baseline_model %>% summarise(sqrt(mean((bias - baseline_preds_bias)^2))) # RMSE = .913
+baseline_model %>% 
+  group_by(Outgroup) %>%
+  summarise(sqrt(mean((bias - baseline_preds_bias)^2))) %>%
+  ungroup() %>% select(-Outgroup) %>% unlist() %>% mean() # RMSE = .903
 
 # baseline values to beat for outgroup attitudes:
 # r-squared
-baseline_model %>% summarise(sum(SS_regress_oA)/sum(SS_total_oA)) # R_squared for Bias: .391
+baseline_model %>% 
+  group_by(Outgroup) %>%
+  summarise(sum(SS_regress_oA)/sum(SS_total_oA)) %>%
+  ungroup() %>% select(-Outgroup) %>% unlist() %>% mean() # R_squared for Bias: .391
 # adjusted r-squared***
-baseline_model %>% summarise(1 - ((1-(sum(SS_regress_oA)/sum(SS_total_oA)))*(nrow(baseline_model)-1)/(nrow(baseline_model)-4-1))) # Adjusted R-Sq: .390
+baseline_model %>% 
+  group_by(Outgroup) %>% 
+  summarise(1 - ((1-(sum(SS_regress_oA)/sum(SS_total_oA)))*(nrow(baseline_model)-1)/(nrow(baseline_model)-4-1))) %>%
+  ungroup() %>% select(-Outgroup) %>% unlist() %>% mean() # Adjusted R-Sq: .390
 # root mean squared error***
-baseline_model %>% summarise(sqrt(mean((outgroup_att - baseline_preds_oA)^2))) # RMSE = 1.90
+baseline_model %>% 
+  group_by(Outgroup) %>%
+  summarise(sqrt(mean((outgroup_att - baseline_preds_oA)^2))) %>%
+  ungroup() %>% select(-Outgroup) %>% unlist() %>% mean() # RMSE = 1.87
 
 # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~#
 
@@ -391,6 +414,45 @@ test_unweighted <- single_run(
   cv_function = evaluate_models_kfold,
   description = "bias_ols_unweighted with 55 vars retained from elastic net", 
   k=5)
+# try weighted model
+test_weighted <- single_run(
+  data = train_data_trans_subset,
+  outcome_var = "bias", 
+  formula_str = paste("bias ~", paste(variables_to_consider$Variable, collapse = " + ")),
+  model_function = ols_regression_fit,
+  cv_function = evaluate_models_kfold,
+  weights = variables_to_consider$ParamWeight,
+  description = "bias_ols_weighted with 55 vars retained from elastic net", 
+  k=5)
+# prune model based on sig vals
+train_data_trans_subset2 <- train_data_trans %>%
+  select(Outgroup,bias,
+         rThreatIG1_log, sThreat3_log, contact_quality_gmc, identification_sol_gmc, symbolic_gmc,
+         generalized_gmc, identification_selfinvestment_gmc, contact_friendsz_gmc, identification_sat_gmc,
+         sThreat3_gmc, Identification5_gmc, DisgustS4_gmc, Identification1_gmc_x_Identification8_gmc, 
+         sThreat2_gmc_x_sThreat4_gmc, Identification2_gmc_x_identification_sol_gmc, Identification7_gmc_x_generalized_probdiff_gmc,
+         Identification6_gmc_x_contact_quality_gmc, DisgustP6_gmc_x_disgust_r_gmc, Identification4_gmc_x_DisgustP1_gmc,
+         sThreat3_gmc_x_DisgustP5_gmc, sThreat3_gmc_x_rThreatIG1_gmc, Identification4_gmc_x_Identification5_gmc, 
+         DisgustS3_gmc_x_DisgustS4_gmc, rThreatIG2_gmc_x_generalized_gmc, Identification1_gmc_x_Identification6_gmc,
+         rThreatIG1_gmc_x_contact_friends_gmc, rThreatOG1_gmc_x_contact_friends_gmc)
+test_unweighted_2 <- single_run(
+  data = train_data_trans_subset2,
+  outcome_var = "bias", 
+  formula_str = paste("bias ~", paste(names(train_data_trans_subset2[3:29]), collapse = " + ")),
+  model_function = ols_regression_fit,
+  cv_function = evaluate_models_kfold,
+  description = "bias_ols_unweighted with 24 vars retained from sig values from elastic net", 
+  k=10)
+test_weighted_2 <- single_run(
+  data = train_data_trans_subset2,
+  outcome_var = "bias",
+  formula_str = paste("bias ~", paste(names(train_data_trans_subset2[3:29]), collapse = " + ")),
+  model_function = ols_regression_fit,
+  cv_function = evaluate_models_kfold,
+  weights = variables_to_consider[which(variables_to_consider$Variable %in% names(train_data_trans_subset2[3:29])),]$ParamWeight,
+  description = "bias_ols_weighted with 24 vars retained from sig values from elastic net",
+  k=10)
+
 # try multilevel unweighted model
 test_unweighted <- single_run(
   data = train_data_trans_subset,
