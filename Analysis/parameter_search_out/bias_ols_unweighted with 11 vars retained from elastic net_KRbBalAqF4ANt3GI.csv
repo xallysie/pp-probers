@@ -1,0 +1,2 @@
+Time,Model,Description,Weights,mean_rmse,mean_adj_r_squared
+2024-06-09T22:09:03Z,bias ~ symbolic_gmc + generalized_gmc + identification_selfinvestment_gmc + identification_sol_gmc + contact_quality_gmc + contact_quality_squared + contact_quality_cubid + generalized_challdiff_gmc + sThreat3_gmc + symbolic_squared + generalized_probdiff_gmc,bias_ols_unweighted with 11 vars retained from elastic net,,0.8445050113809747,0.6249994014107187

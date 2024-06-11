@@ -1,0 +1,2 @@
+Time,Model,Description,Weights,mean_rmse,mean_adj_r_squared
+2024-06-09T21:48:24Z,outgroup_att ~ contact_quality_gmc + symbolic_gmc + sThreat3_log + contact_quality_cubid + sThreat3_gmc + symbolic_squared,outgroup_att_ols_unweighted with 5 vars retained from elastic net,,0.7856032772896133,0.5987725572480785

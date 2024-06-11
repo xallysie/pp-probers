@@ -15,6 +15,7 @@ library(parallel)   # parallel computing
 library(furrr)      # parallel computing
 library(caret)      # for cross-validation
 library(MuMIn)      # for model evaluation
+library(mgcv)       # general additive models
 #library(randomForest) # for random forests 
 
 setwd(dirname(rstudioapi::getActiveDocumentContext()$path)) 
@@ -318,21 +319,21 @@ results <- evaluate_models_loo( # leave-one-out cv
   model_function = ols_regression_fit)
 
 # example usage with linear mixed-effects model
-results <- evaluate_models_kfold(
-  data = train_data,
-  outcome_var = "bias", 
-  formula_str = "bias ~ generalized + symbolic + contact_quality + contact_friendsz + identification_selfinvestment + (generalized + symbolic + contact_quality + contact_friendsz + identification_selfinvestment | Outgroup)", 
-  description = "lmerMod with weights .120*generalized + .173*symbolic + .209*contact_quality + .119*contact_friendsz + .523*identification_selfinvestment", 
-  weights = c(.120, .173, .209, .119, .523),
-  model_function = lmer_regression_fit,
-  k = 5)
-results <- evaluate_models_loo( # DON'T RUN THIS, THIS TAKES A LONG TIME
-  data = train_data,
-  outcome_var = "bias", 
-  formula_str = "bias ~ generalized + symbolic + contact_quality + contact_friendsz + identification_selfinvestment + (generalized + symbolic + contact_quality + contact_friendsz + identification_selfinvestment | Outgroup)", 
-  description = "lmerMod with weights .120*generalized + .173*symbolic + .209*contact_quality + .119*contact_friendsz + .523*identification_selfinvestment", 
-  weights = c(.120, .173, .209, .119, .523),
-  model_function = lmer_regression_fit)
+#results <- evaluate_models_kfold(
+#  data = train_data,
+#  outcome_var = "bias", 
+#  formula_str = "bias ~ generalized + symbolic + contact_quality + contact_friendsz + identification_selfinvestment + (generalized + symbolic + contact_quality + contact_friendsz + identification_selfinvestment | Outgroup)", 
+#  description = "lmerMod with weights .120*generalized + .173*symbolic + .209*contact_quality + .119*contact_friendsz + .523*identification_selfinvestment", 
+#  weights = c(.120, .173, .209, .119, .523),
+#  model_function = lmer_regression_fit,
+#  k = 5)
+#results <- evaluate_models_loo( # DON'T RUN THIS, THIS TAKES A LONG TIME
+#  data = train_data,
+#  outcome_var = "bias", 
+#  formula_str = "bias ~ generalized + symbolic + contact_quality + contact_friendsz + identification_selfinvestment + (generalized + symbolic + contact_quality + contact_friendsz + identification_selfinvestment | Outgroup)", 
+#  description = "lmerMod with weights .120*generalized + .173*symbolic + .209*contact_quality + .119*contact_friendsz + .523*identification_selfinvestment", 
+#  weights = c(.120, .173, .209, .119, .523),
+#  model_function = lmer_regression_fit)
 
 #~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~#
 # convenience function: randomly generate string --------------------------
@@ -392,9 +393,11 @@ cl <- makeCluster(num_cores)
 registerDoParallel(cl)
 
 # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~#
-# function for parameter search -------------------------------------------
+# test some models --------------------------------------------------------
 
-# define parameter grid for parallel execution
+# BIAS MODEL 2.0
+# take 55 variables from elastic net (whittled down from ~1400) and test 
+
 # load list of variables and starting values
 load("train_data_transformations_V1.Rda")
 
@@ -453,16 +456,499 @@ test_weighted_2 <- single_run(
   description = "bias_ols_weighted with 24 vars retained from sig values from elastic net",
   k=10)
 
-# try multilevel unweighted model
+# BIAS MODEL 2.5 *** BEST SO FAR
+# take 55 + 58 variables from two versions of elastic nets
+# 55 whittled down from ~1400, 58 whittled down from ~2600
+# total 68 vars
+stopCluster(cl)
+
+# load list of variables and starting values
+load("train_data_transformations_V2_with2659vars.Rda")
+
+variables_to_consider_1 <- read_csv("output/ElasticNet_NOTmultilevel_ParameterWeights_Transformed_V1.csv") %>%
+  filter(ParamWeight != 0)
+variables_to_consider_2 <- read_csv("output/ElasticNet_NOTmultilevel_ParameterWeights_Transformed_V2_with2653preds.csv") %>%
+  filter(ParamWeight != 0)
+new_variables_to_consider <- variables_to_consider_2 %>%
+  filter(!Variable %in% variables_to_consider_1$Variable)
+old_variables_dropped <- variables_to_consider_1 %>%
+  filter(!Variable %in% variables_to_consider_2$Variable)
+
+variables_to_consider <- rbind(variables_to_consider_2, old_variables_dropped) %>%
+  rbind(c("extreme_proportion_q_gmc",.005),c("item_variances_gmc",.005))
+
+train_data_trans_subset <- train_data_trans %>%
+  select(Outgroup, bias, all_of(variables_to_consider$Variable))
+
+# try unweighted model
 test_unweighted <- single_run(
   data = train_data_trans_subset,
   outcome_var = "bias", 
-  formula_str = paste("bias ~", paste(variables_to_consider$Variable, collapse = " + "), paste(" + ("), paste(variables_to_consider$Variable, collapse = " + "), paste(" | Outgroup)")),
-  model_function = lmer_regression_fit,
+  formula_str = paste("bias ~", paste(variables_to_consider$Variable, collapse = " + ")),
+  model_function = ols_regression_fit,
   cv_function = evaluate_models_kfold,
-  description = "bias_lmer_unweighted with 55 vars retained from elastic net and 55 random intercepts", 
-  k=5)
+  description = "bias_ols_unweighted with 70 vars retained from elastic net", 
+  k=20) 
+# try weighted 
+test_weighted <- single_run(
+  data = train_data_trans_subset,
+  outcome_var = "bias", 
+  formula_str = paste("bias ~", paste(variables_to_consider$Variable, collapse = " + ")),
+  model_function = ols_regression_fit,
+  cv_function = evaluate_models_kfold,
+  weights = variables_to_consider$ParamWeight,
+  description = "bias_ols_weighted with 70 vars retained from elastic net", 
+  k=20) 
 
+
+
+# BIAS MODEL 2.5B 
+# take 55 + 58 variables from two versions of elastic nets
+# total 68+2 vars
+# also replace squared vals with abs()
+stopCluster(cl)
+
+# load list of variables and starting values
+load("train_data_transformations_V3_with2658vars.Rda")
+
+variables_to_consider_1 <- read_csv("output/ElasticNet_NOTmultilevel_ParameterWeights_Transformed_V1.csv") %>%
+  filter(ParamWeight != 0)
+variables_to_consider_2 <- read_csv("output/ElasticNet_NOTmultilevel_ParameterWeights_Transformed_V2_with2653preds.csv") %>%
+  filter(ParamWeight != 0)
+new_variables_to_consider <- variables_to_consider_2 %>%
+  filter(!Variable %in% variables_to_consider_1$Variable)
+old_variables_dropped <- variables_to_consider_1 %>%
+  filter(!Variable %in% variables_to_consider_2$Variable)
+
+variables_to_consider <- rbind(variables_to_consider_2, old_variables_dropped) %>%
+  rbind(c("extreme_proportion_q_gmc",.005),c("item_variances_gmc",.005))
+
+train_data_trans_subset <- train_data_trans %>%
+  select(Outgroup, bias, all_of(variables_to_consider$Variable))
+
+# try unweighted model
+test_unweighted <- single_run(
+  data = train_data_trans_subset,
+  outcome_var = "bias", 
+  formula_str = paste("bias ~", paste(variables_to_consider$Variable, collapse = " + ")),
+  model_function = ols_regression_fit,
+  cv_function = evaluate_models_kfold,
+  description = "bias_ols_unweighted with 70 vars retained from elastic net", 
+  k=20)
+# try weighted
+test_weighted <- single_run(
+  data = train_data_trans_subset,
+  outcome_var = "bias", 
+  formula_str = paste("bias ~", paste(variables_to_consider$Variable, collapse = " + ")),
+  model_function = ols_regression_fit,
+  cv_function = evaluate_models_kfold,
+  weights = variables_to_consider$ParamWeight,
+  description = "bias_ols_weighted with 70 vars retained from elastic net", 
+  k=20) 
+
+# BIAS MODEL 2.7
+# applied interaction, polynomial, & MD transformation only to (sub)factors
+# total 282 vars, whittled down to 54+2
+# also replace squared vals with abs()
+stopCluster(cl)
+
+# load list of variables and starting values
+load("train_data_transformationssubfactors_V3_with288vars.Rda")
+
+variables_to_consider <- read_csv("output/ElasticNet_NOTmultilevel_Subfactors_Transformed_with288preds.csv") %>%
+  filter(Variable != "item_variances" & Variable != "extreme_proportion_q") %>%
+  filter(ParamWeight != 0) %>%
+  rbind(c("extreme_proportion_q_gmc",.005), c("item_variances_gmc",.005))
+
+train_data_trans_subset <- train_data_trans %>%
+  select(Outgroup, bias, all_of(variables_to_consider$Variable))
+
+# try unweighted model
+test_unweighted <- single_run(
+  data = train_data_trans_subset,
+  outcome_var = "bias", 
+  formula_str = paste("bias ~", paste(variables_to_consider$Variable, collapse = " + ")),
+  model_function = ols_regression_fit,
+  cv_function = evaluate_models_kfold,
+  description = "bias_ols_unweighted with 56 vars retained from elastic net", 
+  k=20)
+# try weighted
+test_weighted <- single_run(
+  data = train_data_trans_subset,
+  outcome_var = "bias", 
+  formula_str = paste("bias ~", paste(variables_to_consider$Variable, collapse = " + ")),
+  model_function = ols_regression_fit,
+  cv_function = evaluate_models_kfold,
+  weights = variables_to_consider$ParamWeight,
+  description = "bias_ols_weighted with 70 vars retained from elastic net", 
+  k=20) 
+
+# BIAS MODEL 2.8
+# applied interaction, polynomial, & MD transformation TO ALL VARS
+# total 2750 vars, whittled down to 52+2
+# also replace squared vals with abs()
+stopCluster(cl)
+
+# load list of variables and starting values
+load("train_data_transformations_V3_with2750vars.Rda")
+
+variables_to_consider <- read_csv("output/ElasticNet_NOTmultilevel_ALL_Transformed_with2750preds.csv") %>%
+  filter(Variable != "item_variances" & Variable != "extreme_proportion_q") %>%
+  filter(ParamWeight != 0) %>%
+  rbind(c("extreme_proportion_q_gmc",.005), c("item_variances_gmc",.005))
+
+train_data_trans_subset <- train_data_trans %>%
+  select(Outgroup, bias, all_of(variables_to_consider$Variable))
+
+# try unweighted model
+test_unweighted <- single_run(
+  data = train_data_trans_subset,
+  outcome_var = "bias", 
+  formula_str = paste("bias ~", paste(variables_to_consider$Variable, collapse = " + ")),
+  model_function = ols_regression_fit,
+  cv_function = evaluate_models_kfold,
+  description = "bias_ols_unweighted with 54 vars retained from elastic net", 
+  k=20)
+# try weighted
+test_weighted <- single_run(
+  data = train_data_trans_subset,
+  outcome_var = "bias", 
+  formula_str = paste("bias ~", paste(variables_to_consider$Variable, collapse = " + ")),
+  model_function = ols_regression_fit,
+  cv_function = evaluate_models_kfold,
+  weights = variables_to_consider$ParamWeight,
+  description = "bias_ols_weighted with 54 vars retained from elastic net", 
+  k=20)
+
+summary(lm(
+  paste("bias ~", paste(variables_to_consider$Variable, collapse = " + ")),
+  data=train_data_trans_subset
+))
+
+# BIAS MODEL 2.6
+# take 383 variables, whittled down to 83
+# (re-created factor/subfactors as sum scores, applied transformations mostly
+# to sum scores)
+stopCluster(cl)
+
+# load list of variables and starting values
+load("train_data_sumscores_Factortransformations_with383vars.Rda")
+
+variables_to_consider <- read_csv("output/ElasticNet_NOTmultilevel_SumScoreFactors_Transformed_with383preds.csv") %>%
+  filter(ParamWeight != 0)
+
+variables_to_consider <- variables_to_consider %>%
+  filter(Variable != "item_variances" & Variable != "extreme_proportion_sd")
+
+train_data_trans_subset <- train_data_sumscores_trans %>%
+  select(Outgroup, bias, all_of(variables_to_consider$Variable))
+
+# try unweighted model
+test_unweighted <- single_run(
+  data = train_data_trans_subset,
+  outcome_var = "bias", 
+  formula_str = paste("bias ~", paste(variables_to_consider$Variable, collapse = " + ")),
+  model_function = ols_regression_fit,
+  cv_function = evaluate_models_kfold,
+  description = "bias_ols_unweighted with 93 vars retained from elastic net", 
+  k=20)
+# try weighted
+test_weighted <- single_run(
+  data = train_data_trans_subset,
+  outcome_var = "bias", 
+  formula_str = paste("bias ~", paste(variables_to_consider$Variable, collapse = " + ")),
+  model_function = ols_regression_fit,
+  cv_function = evaluate_models_kfold,
+  weights = variables_to_consider$ParamWeight,
+  description = "bias_ols_weighted with 93 vars retained from elastic net", 
+  k=20) 
+
+# BIAS MODEL 2.7
+# take 2794 variables, whittled down to 77 + 2
+# (re-created factor/subfactors as sum scores, applied transformations)
+stopCluster(cl)
+
+# load list of variables and starting values
+load("train_data_sumscores_transformations_with2794vars.Rda")
+
+variables_to_consider <- read_csv("output/ElasticNet_NOTmultilevel_SumScore_Transformed_with2794preds.csv") %>%
+  filter(ParamWeight != 0) %>%
+  rbind(c("extreme_proportion_q_gmc",.005),c("item_variances_gmc",.005))
+
+train_data_trans_subset <- train_data_sumscores_trans %>%
+  select(Outgroup, bias, all_of(variables_to_consider$Variable))
+
+# try unweighted model
+test_unweighted <- single_run(
+  data = train_data_trans_subset,
+  outcome_var = "bias", 
+  formula_str = paste("bias ~", paste(variables_to_consider$Variable, collapse = " + ")),
+  model_function = ols_regression_fit,
+  cv_function = evaluate_models_kfold,
+  description = "bias_ols_unweighted with 77 vars retained from elastic net", 
+  k=20)
+# try weighted
+test_weighted <- single_run(
+  data = train_data_trans_subset,
+  outcome_var = "bias", 
+  formula_str = paste("bias ~", paste(variables_to_consider$Variable, collapse = " + ")),
+  model_function = ols_regression_fit,
+  cv_function = evaluate_models_kfold,
+  weights = variables_to_consider$ParamWeight,
+  description = "bias_ols_weighted with 93 vars retained from elastic net", 
+  k=20) 
+
+# BIAS MODEL 6.0
+# take vars from stricter versions of elastic nets
+# 11 whittled down from ~1400, 58 whittled down from ~2600
+
+# load list of variables and starting values
+load("train_data_transformations_V2_with2653vars.Rda")
+
+variables_to_consider_3 <- read_csv("output/ElasticNet_Lambda0.50_Alpha0.70_11vars.csv") %>%
+  filter(ParamWeight != 0)
+train_data_trans_subset <- train_data_trans %>%
+  select(Outgroup, bias, all_of(variables_to_consider_3$Variable))
+
+# try unweighted model
+test_unweighted <- single_run(
+  data = train_data_trans_subset,
+  outcome_var = "bias", 
+  formula_str = paste("bias ~", paste(variables_to_consider_3$Variable, collapse = " + ")),
+  model_function = ols_regression_fit,
+  cv_function = evaluate_models_kfold,
+  description = "bias_ols_unweighted with 11 vars retained from elastic net", 
+  k=20)
+# try weighted
+test_weighted <- single_run(
+  data = train_data_trans_subset,
+  outcome_var = "bias", 
+  formula_str = paste("bias ~", paste(variables_to_consider_3$Variable, collapse = " + ")),
+  model_function = ols_regression_fit,
+  cv_function = evaluate_models_kfold,
+  weights = variables_to_consider_3$ParamWeight,
+  description = "bias_ols_weighted with 11 vars retained from elastic net", 
+  k=20) 
+
+
+predicted_values <- predict(ols_regression_fit(
+  data = train_data_trans_subset,
+  outcome_var = "bias", 
+  formula_str = paste("bias ~", paste(variables_to_consider_3$Variable, collapse = " + "))
+), newdata = train_data_trans_subset, se.fit = TRUE)
+preds <- train_data_trans_subset %>%
+  select(Outgroup,bias) %>%
+  cbind(predicted_values$fit)
+
+
+
+
+lasso_preds11 = as.matrix(train_data_trans %>%
+                          select(
+                            all_of(variables_to_consider_3$Variable))
+) %*% variables_to_consider_3$ParamWeight
+
+theme_set(theme_classic())
+
+library(data.table)
+lasso_model11 = data.table(
+  data.frame(lasso11 = lasso_preds11,
+             lasso = lasso_preds,
+             baseline = baseline_model$baseline_preds_bias,
+             bias = train_data$bias)
+)
+
+# lasso works well, but
+ggplot(lasso_model11, aes(x = lasso11, y= lasso)) +
+  geom_point(alpha = .2)  + geom_smooth(method = 'lm')
+
+ggplot(lasso_model11, aes(x = bias - lasso, y= lasso11)) +
+  geom_point(alpha = .2)  + geom_smooth(method = 'lm')
+
+
+
+# BIAS 4.0 without MDstuff
+variables_to_consider_7 <- elastic_net_weights %>%
+  filter(ParamWeight != 0)
+train_data_trans_subset <- train_data_trans %>%
+  select(Outgroup, bias, all_of(variables_to_consider_7$Variable))
+
+test_unweighted <- single_run(
+  data = train_data_trans_subset,
+  outcome_var = "bias", 
+  formula_str = paste("bias ~", paste(variables_to_consider_7$Variable, collapse = " + ")),
+  model_function = ols_regression_fit,
+  cv_function = evaluate_models_kfold,
+  description = "bias_ols_unweighted with 47 vars retained from elastic net", 
+  k=20)
+
+
+predicted_values <- predict(ols_regression_fit(
+  data = train_data_trans_subset,
+  outcome_var = "bias", 
+  formula_str = paste("bias ~", paste(variables_to_consider_7$Variable, collapse = " + "))
+), newdata = train_data_trans_subset, se.fit = TRUE)
+preds <- train_data_trans_subset %>%
+  select(Outgroup,bias) %>%
+  cbind(predicted_values$fit)
+
+
+
+
+lasso_preds = as.matrix(train_data_trans %>%
+                          select(
+                            all_of(variables_to_consider_7$Variable))
+) %*% variables_to_consider_7$ParamWeight
+
+theme_set(theme_classic())
+
+library(data.table)
+lasso_model = data.table(
+  data.frame(lasso = lasso_preds,
+             baseline = baseline_model$baseline_preds_bias,
+             bias = train_data$bias)
+)
+
+# lasso works well, but
+ggplot(lasso_model, aes(x = bias, y= lasso)) +
+  geom_point(alpha = .2)  + geom_smooth(method = 'lm')
+
+# ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~#
+# test with outgroup attitudes
+
+# OUTGROUP ATTITUDES MODEL 3.0
+# take vars from stricter versions of elastic nets
+# 55 whittled down from ~1400, 58 whittled down from ~2600
+
+# load list of variables and starting values
+load("train_data_transformations_V2_with2653vars.Rda")
+load("train_data_transformations_V3_with2750vars.Rda")
+
+variables_to_consider_4 <- read_csv("output/ElasticNet_OutgroupAttitudes_ParameterWeights_Transformed_V2_with2653preds.csv") %>%
+  filter(ParamWeight != 0) 
+train_data_trans_subset <- train_data_trans %>%
+  select(Outgroup, outgroup_att, all_of(variables_to_consider_4$Variable))
+
+# try unweighted model
+test_unweighted <- single_run(
+  data = train_data_trans_subset,
+  outcome_var = "outgroup_att", 
+  formula_str = paste("outgroup_att ~", paste(variables_to_consider_4$Variable, collapse = " + ")),
+  model_function = ols_regression_fit,
+  cv_function = evaluate_models_kfold,
+  description = "outgroup_att_ols_unweighted with 70 vars retained from elastic net", 
+  k=20)
+
+# try weighted model
+test_unweighted <- single_run(
+  data = train_data_trans_subset,
+  outcome_var = "outgroup_att", 
+  formula_str = paste("outgroup_att ~", paste(variables_to_consider_4$Variable, collapse = " + ")),
+  model_function = ols_regression_fit,
+  cv_function = evaluate_models_kfold,
+  weights = variables_to_consider_4$ParamWeight,
+  description = "outgroup_att_ols_weighted with 70 vars retained from elastic net", 
+  k=20)
+
+# try model with stricter lambda
+variables_to_consider_5 <- read_csv("output/ElasticNet_OutgroupAttitudes_Lambda0.50_Alpha0.70_11vars.csv") %>%
+  filter(ParamWeight != 0)
+train_data_trans_subset <- train_data_trans %>%
+  select(Outgroup, outgroup_att, all_of(variables_to_consider_5$Variable))
+
+# try unweighted model
+test_unweighted <- single_run(
+  data = train_data_trans_subset,
+  outcome_var = "outgroup_att", 
+  formula_str = paste("outgroup_att ~", paste(variables_to_consider_5$Variable, collapse = " + ")),
+  model_function = ols_regression_fit,
+  cv_function = evaluate_models_kfold,
+  description = "outgroup_att_ols_unweighted with 5 vars retained from elastic net", 
+  k=20)
+
+
+
+
+# OUTGROUP ATT 4.0
+# applied interaction, polynomial, & MD transformation TO ALL VARS
+# total 2750 vars, whittled down to 52+2
+# also replace squared vals with abs()
+stopCluster(cl)
+
+# load list of variables and starting values
+load("train_data_transformations_V3_with2750vars.Rda")
+
+variables_to_consider <- read_csv("output/ElasticNet_NOTmultilevel_OutgroupAtt_Transformed_with2750preds.csv") %>%
+  filter(Variable != "item_variances" & Variable != "extreme_proportion_q") %>%
+  filter(ParamWeight != 0) %>%
+  rbind(c("extreme_proportion_q_gmc",.005), c("item_variances_gmc",.005))
+
+train_data_trans_subset <- train_data_trans %>%
+  select(Outgroup, outgroup_att, all_of(variables_to_consider$Variable))
+
+# try unweighted model
+test_unweighted <- single_run(
+  data = train_data_trans_subset,
+  outcome_var = "outgroup_att", 
+  formula_str = paste("outgroup_att ~", paste(variables_to_consider$Variable, collapse = " + ")),
+  model_function = ols_regression_fit,
+  cv_function = evaluate_models_kfold,
+  description = "outgroup_att_ols_unweighted with 70 vars retained from elastic net", 
+  k=20)
+# test models with paper_data ---------------------------------------------
+
+paper_data <- list.files(path = "../TrainingData/paper_data/", pattern = "*.csv") %>% 
+  str_subset("CorrPlot", negate=TRUE) %>%
+  map_df(~read_csv(paste0("../TrainingData/paper_data/",.), show_col_types=F))
+
+
+# OLD STUFF TO TRY
+
+# try weighted model
+test_weighted <- single_run(
+  data = train_data_trans_subset,
+  outcome_var = "bias", 
+  formula_str = paste("bias ~", paste(variables_to_consider$Variable, collapse = " + ")),
+  model_function = ols_regression_fit,
+  cv_function = evaluate_models_kfold,
+  weights = variables_to_consider$ParamWeight,
+  description = "bias_ols_weighted with 55 vars retained from elastic net", 
+  k=5)
+# prune model based on sig vals
+train_data_trans_subset2 <- train_data_trans %>%
+  select(Outgroup,bias,
+         rThreatIG1_log, sThreat3_log, contact_quality_gmc, identification_sol_gmc, symbolic_gmc,
+         generalized_gmc, identification_selfinvestment_gmc, contact_friendsz_gmc, identification_sat_gmc,
+         sThreat3_gmc, Identification5_gmc, DisgustS4_gmc, Identification1_gmc_x_Identification8_gmc, 
+         sThreat2_gmc_x_sThreat4_gmc, Identification2_gmc_x_identification_sol_gmc, Identification7_gmc_x_generalized_probdiff_gmc,
+         Identification6_gmc_x_contact_quality_gmc, DisgustP6_gmc_x_disgust_r_gmc, Identification4_gmc_x_DisgustP1_gmc,
+         sThreat3_gmc_x_DisgustP5_gmc, sThreat3_gmc_x_rThreatIG1_gmc, Identification4_gmc_x_Identification5_gmc, 
+         DisgustS3_gmc_x_DisgustS4_gmc, rThreatIG2_gmc_x_generalized_gmc, Identification1_gmc_x_Identification6_gmc,
+         rThreatIG1_gmc_x_contact_friends_gmc, rThreatOG1_gmc_x_contact_friends_gmc)
+test_unweighted_2 <- single_run(
+  data = train_data_trans_subset2,
+  outcome_var = "bias", 
+  formula_str = paste("bias ~", paste(names(train_data_trans_subset2[3:29]), collapse = " + ")),
+  model_function = ols_regression_fit,
+  cv_function = evaluate_models_kfold,
+  description = "bias_ols_unweighted with 24 vars retained from sig values from elastic net", 
+  k=10)
+test_weighted_2 <- single_run(
+  data = train_data_trans_subset2,
+  outcome_var = "bias",
+  formula_str = paste("bias ~", paste(names(train_data_trans_subset2[3:29]), collapse = " + ")),
+  model_function = ols_regression_fit,
+  cv_function = evaluate_models_kfold,
+  weights = variables_to_consider[which(variables_to_consider$Variable %in% names(train_data_trans_subset2[3:29])),]$ParamWeight,
+  description = "bias_ols_weighted with 24 vars retained from sig values from elastic net",
+  k=10)
+
+
+
+# ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~#
+# function for parameter search -------------------------------------------
+
+######## TO-DO, NOT YET IMPLEMENTED ####################
 # generate weight ranges
 generate_weight_range <- function(start_val, step = 0.1, range = 0.10) {
   seq(from = start_val - range, to = start_val + range, by = step)

@@ -73,6 +73,10 @@ outcome_outgroup_att <- train_data[["outgroup_att"]]
 group <- train_data[["Outgroup"]] # these data are nested within the Outgroup cluster, which contains 15 unique groups
 
 
+# BIAS--------------------------------------- -----------------------------
+
+
+
 #~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~#
 # BASIC MODEL -------------------------------------------------------------
 
@@ -88,7 +92,7 @@ cl <- makeCluster(detectCores() - 1) # leave one core free
 registerDoParallel(cl)
 
 # cross-validation for elastic net
-cv_fit <- cv.glmnet(x=predictors, y=outcome_bias, alpha=0.5, parallel=TRUE)
+cv_fit <- cv.glmnet(x=predictors, y=outcome_bias, alpha=0.7, parallel=TRUE)
 
 # best lambda
 best_lambda <- cv_fit$lambda.min
@@ -114,23 +118,36 @@ write_csv(elastic_net_weights, file="output/ElasticNet_NOTmultilevel_ParameterWe
 
 # > L1 regularization w/ multilevel structure -----------------------------
 
+# add cubic squared 
+load("train_data_transformations_raised.Rdata")
+
 # keep only predictors with non-zero weights from elastic net
 elastic_net_approved_preds <- elastic_net_weights %>%
   filter(ParamWeight != 0) %>%
   select(Variable) %>%
   unlist() %>% as.character()
 
-# define the fixed-effects formula (exclude random eff)
-formula <- as.formula(
-  paste("bias ~ ", paste(elastic_net_approved_preds, collapse = " + ")))
-formula
+train_data_elasticizedvars <- train_data_extended %>%
+  dplyr::select(everything(), -WarmIG, -WarmOG, -PositiveIG, -PositiveOG, -LikeIG, -LikeOG, -diff_warm, -diff_pos, -diff_like, -sThreat3R, -agreeable1r) %>%
+  mutate_if(is.integer, as.numeric) %>%
+  select(everything(),  all_of(elastic_net_approved_preds), -contact_friends)
 
-train_data_elasticizedvars <- train_data %>%
-  select(Outgroup, bias, outgroup_att, all_of(elastic_net_approved_preds), -contact_friends)
-
+predictors_list <- train_data_elasticizedvars %>%
+  select(-Outgroup, -bias, -outgroup_att) %>% names()
 predictors_elasticizedvars <- train_data_elasticizedvars %>%
   select(-Outgroup, -bias, -outgroup_att) %>%
+  mutate_if(is.integer, as.numeric) %>%
   as.matrix()
+
+
+
+
+# define the fixed-effects formula (exclude random eff)
+formula_str <- as.formula(
+  paste("bias ~ ", paste(predictors_list, collapse = " + "))
+  )
+formula_str
+
 
 # Register parallel backend
 cl <- makeCluster(detectCores() - 1)
@@ -155,7 +172,7 @@ tuning_results <- foreach(lambda = lambda_values,
     train_fold <- train_data_elasticizedvars[train_idx, ]
     val_fold <- train_data_elasticizedvars[val_idx, ]
     
-    model <- glmmLasso(fix = formula, rnd = list(Outgroup = ~1), data=train_data_elasticizedvars,
+    model <- glmmLasso(fix = formula_str, rnd = list(Outgroup = ~1), data=train_data_elasticizedvars,
                        lambda = lambda, family = gaussian(link = "identity"))
     
     preds <- predict(model, newdata = val_fold)
@@ -174,8 +191,8 @@ stopCluster(cl)
 best_lambda <- tuning_results[which.min(tuning_results$mean_rmse), "lambda"]
 
 # fit final model w best lambda: fixed lmer w/ lasso regularization
-final_model <- glmmLasso(fix = formula, rnd = list(Outgroup = ~1), data = train_data, 
-                         lambda = best_lambda, family = gaussian(link = "identity"))
+final_model <- glmmLasso(fix = formula_str, rnd = list(Outgroup = ~1), data = train_data_elasticizedvars, 
+                         lambda = .5, family = gaussian(link = "identity"))
 
 # summary of the final model
 summary(final_model)
@@ -296,7 +313,7 @@ write_csv(elastic_net_weights, file="output/ElasticNet_NOTmultilevel_ParameterWe
 
 # added 2024/06/9
 
-load("train_data_transformations_V2_with2653vars.Rda")
+load("train_data_transformations_V2_with2659vars.Rda")
 
 # redefine predictors
 predictors <- train_data_trans %>%
@@ -308,13 +325,13 @@ cl <- makeCluster(detectCores() - 1) # leave one core free
 registerDoParallel(cl)
 
 # cross-validation for elastic net
-cv_fit <- cv.glmnet(x=predictors, y=outcome_bias, alpha=0.5, parallel=TRUE)
+cv_fit <- cv.glmnet(x=predictors, y=outcome_bias, alpha=0.7, parallel=TRUE)
 
 # best lambda
 best_lambda <- cv_fit$lambda.min
 
 # fit final model
-elastic_net_model <- glmnet(x=predictors, y=outcome_bias, alpha = 0.5, lambda=best_lambda)
+elastic_net_model <- glmnet(x=predictors, y=outcome_bias, alpha = 0.7, lambda=best_lambda)
 
 # Stop the cluster
 stopCluster(cl)
@@ -329,7 +346,222 @@ elastic_net_weights <- cbind(rownames(elastic_net_weights), data.frame(elastic_n
 names(elastic_net_weights) <- c("Variable","ParamWeight")
 elastic_net_weights <- elastic_net_weights[order(abs(elastic_net_weights$ParamWeight), decreasing=T), ]
 
-write_csv(elastic_net_weights, file="output/ElasticNet_NOTmultilevel_ParameterWeights_Transformed_V2_with2653preds.csv")
+write_csv(elastic_net_weights, file="output/ElasticNet_NOTmultilevel_ParameterWeights_Transformed_V2_with2659preds.csv")
+
+#~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~#
+# without MD
+# APPLY MORE VAR TRANSFORMATIONS (without mah_d) --------------------------
+
+# added 2024/06/9
+
+load("train_data_transformations_V2_with2655vars.Rda")
+
+# redefine predictors
+predictors <- train_data_trans %>%
+  dplyr::select(-bias, -outgroup_att, -Outgroup) %>%
+  as.matrix()
+
+# remove mahalanobis
+#predictors <- train_data_trans %>%
+#  dplyr::select(-bias, -outgroup_att, -Outgroup) %>%
+#  select(!contains("mD_log")) %>%
+#  as.matrix()
+
+# Register parallel backend
+cl <- makeCluster(detectCores() - 1) # leave one core free
+registerDoParallel(cl)
+
+# cross-validation for elastic net
+cv_fit <- cv.glmnet(x=predictors, y=outcome_bias, alpha=0.7, parallel=TRUE)
+
+# best lambda
+best_lambda <- cv_fit$lambda.min
+
+# fit final model
+elastic_net_model <- glmnet(x=predictors, y=outcome_bias, alpha = 0.7, lambda=best_lambda)
+
+# Stop the cluster
+stopCluster(cl)
+
+# Summary of the model
+print(elastic_net_model$beta)
+
+# order by abs magnitude of weight
+elastic_net_weights <- matrix(elastic_net_model$beta, dimnames=elastic_net_model$beta@Dimnames)
+elastic_net_weights <- as.data.frame(elastic_net_weights)
+elastic_net_weights <- cbind(rownames(elastic_net_weights), data.frame(elastic_net_weights, row.names=NULL))
+names(elastic_net_weights) <- c("Variable","ParamWeight")
+elastic_net_weights <- elastic_net_weights[order(abs(elastic_net_weights$ParamWeight), decreasing=T), ]
+
+write_csv(elastic_net_weights, file="output/ElasticNet_NOTmultilevel_ParameterWeights_Transformed_V2_with2655preds.csv")
+
+
+#~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~#
+
+# APPLY VAR TRANSFORMATIONS (sum score, factor-only) ----------------------
+
+# added 2024/06/10
+
+load("train_data_sumscores_Factortransformations_with383vars.Rda")
+
+# redefine predictors
+predictors <- train_data_sumscores_trans %>%
+  dplyr::select(-bias, -outgroup_att, -Outgroup) %>%
+  as.matrix()
+
+# Register parallel backend
+cl <- makeCluster(detectCores() - 1) # leave one core free
+registerDoParallel(cl)
+
+# cross-validation for elastic net
+cv_fit <- cv.glmnet(x=predictors, y=outcome_bias, alpha=0.7, parallel=TRUE)
+
+# best lambda
+best_lambda <- cv_fit$lambda.min
+
+# fit final model
+elastic_net_model <- glmnet(x=predictors, y=outcome_bias, alpha = 0.7, lambda=best_lambda)
+
+# Stop the cluster
+stopCluster(cl)
+
+# Summary of the model
+print(elastic_net_model$beta)
+
+# order by abs magnitude of weight
+elastic_net_weights <- matrix(elastic_net_model$beta, dimnames=elastic_net_model$beta@Dimnames)
+elastic_net_weights <- as.data.frame(elastic_net_weights)
+elastic_net_weights <- cbind(rownames(elastic_net_weights), data.frame(elastic_net_weights, row.names=NULL))
+names(elastic_net_weights) <- c("Variable","ParamWeight")
+elastic_net_weights <- elastic_net_weights[order(abs(elastic_net_weights$ParamWeight), decreasing=T), ]
+
+write_csv(elastic_net_weights, file="output/ElasticNet_NOTmultilevel_SumScoreFactors_Transformed_with383preds.csv")
+
+
+#~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~#
+
+# APPLY VAR TRANSFORMATIONS (sum score, 2794 raw) ----------------------
+
+# added 2024/06/10
+
+load("train_data_sumscores_transformations_with2794vars.Rda")
+
+# redefine predictors
+predictors <- train_data_sumscores_trans %>%
+  dplyr::select(-bias, -outgroup_att, -Outgroup) %>%
+  as.matrix()
+
+# Register parallel backend
+cl <- makeCluster(detectCores() - 1) # leave one core free
+registerDoParallel(cl)
+
+# cross-validation for elastic net
+cv_fit <- cv.glmnet(x=predictors, y=outcome_bias, alpha=0.7, parallel=TRUE)
+
+# best lambda
+best_lambda <- cv_fit$lambda.min
+
+# fit final model
+elastic_net_model <- glmnet(x=predictors, y=outcome_bias, alpha = 0.7, lambda=best_lambda)
+
+# Stop the cluster
+stopCluster(cl)
+
+# Summary of the model
+print(elastic_net_model$beta)
+
+# order by abs magnitude of weight
+elastic_net_weights <- matrix(elastic_net_model$beta, dimnames=elastic_net_model$beta@Dimnames)
+elastic_net_weights <- as.data.frame(elastic_net_weights)
+elastic_net_weights <- cbind(rownames(elastic_net_weights), data.frame(elastic_net_weights, row.names=NULL))
+names(elastic_net_weights) <- c("Variable","ParamWeight")
+elastic_net_weights <- elastic_net_weights[order(abs(elastic_net_weights$ParamWeight), decreasing=T), ]
+
+write_csv(elastic_net_weights, file="output/ElasticNet_NOTmultilevel_SumScore_Transformed_with2794preds.csv")
+
+
+#~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~#
+
+# APPLY VAR TRANSFORMATIONS (subfactorsm 282 raw) -------------------------
+
+# added 2024/06/10
+
+load("train_data_transformationssubfactors_V3_with288vars.Rda")
+
+# redefine predictors
+predictors <- train_data_trans %>%
+  dplyr::select(-bias, -outgroup_att, -Outgroup) %>%
+  as.matrix()
+
+# Register parallel backend
+cl <- makeCluster(detectCores() - 1) # leave one core free
+registerDoParallel(cl)
+
+# cross-validation for elastic net
+cv_fit <- cv.glmnet(x=predictors, y=outcome_bias, alpha=0.7, parallel=TRUE)
+
+# best lambda
+best_lambda <- cv_fit$lambda.min
+
+# fit final model
+elastic_net_model <- glmnet(x=predictors, y=outcome_bias, alpha = 0.7, lambda=best_lambda)
+
+# Stop the cluster
+stopCluster(cl)
+
+# Summary of the model
+print(elastic_net_model$beta)
+
+# order by abs magnitude of weight
+elastic_net_weights <- matrix(elastic_net_model$beta, dimnames=elastic_net_model$beta@Dimnames)
+elastic_net_weights <- as.data.frame(elastic_net_weights)
+elastic_net_weights <- cbind(rownames(elastic_net_weights), data.frame(elastic_net_weights, row.names=NULL))
+names(elastic_net_weights) <- c("Variable","ParamWeight")
+elastic_net_weights <- elastic_net_weights[order(abs(elastic_net_weights$ParamWeight), decreasing=T), ]
+
+write_csv(elastic_net_weights, file="output/ElasticNet_NOTmultilevel_Subfactors_Transformed_with288preds.csv")
+
+
+#~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~#
+
+# APPLY VAR TRANSFORMATIONS (alllll 2750 raw) -----------------------------
+
+# added 2024/06/10
+
+load("train_data_transformations_V3_with2750vars.Rda")
+
+# redefine predictors
+predictors <- train_data_trans %>%
+  dplyr::select(-bias, -outgroup_att, -Outgroup) %>%
+  as.matrix()
+
+# Register parallel backend
+cl <- makeCluster(detectCores() - 1) # leave one core free
+registerDoParallel(cl)
+
+# cross-validation for elastic net
+cv_fit <- cv.glmnet(x=predictors, y=outcome_bias, alpha=0.7, parallel=TRUE)
+
+# best lambda
+best_lambda <- cv_fit$lambda.min
+
+# fit final model
+elastic_net_model <- glmnet(x=predictors, y=outcome_bias, alpha = 0.7, lambda=best_lambda)
+
+# Stop the cluster
+stopCluster(cl)
+
+# Summary of the model
+print(elastic_net_model$beta)
+
+# order by abs magnitude of weight
+elastic_net_weights <- matrix(elastic_net_model$beta, dimnames=elastic_net_model$beta@Dimnames)
+elastic_net_weights <- as.data.frame(elastic_net_weights)
+elastic_net_weights <- cbind(rownames(elastic_net_weights), data.frame(elastic_net_weights, row.names=NULL))
+names(elastic_net_weights) <- c("Variable","ParamWeight")
+elastic_net_weights <- elastic_net_weights[order(abs(elastic_net_weights$ParamWeight), decreasing=T), ]
+
+write_csv(elastic_net_weights, file="output/ElasticNet_NOTmultilevel_ALL_Transformed_with2750preds.csv")
 
 
 # > TO-DO: L1 regularization w/ multilevel structure -----------------------------
@@ -420,5 +652,89 @@ glmmlasso_weights <- glmmlasso_weights[order(abs(glmmlasso_weights$ParamWeight),
 write_csv(glmmlasso_weights, file="output/glmmLasso_multilevel_ParameterWeights_Phase2Regulariation.csv")
 
 
+# OUTGROUP ATTITUDES--------------------------------------- -----------------------------
 
 
+
+
+# APPLY MORE VAR TRANSFORMATIONS ------------------------------------------
+
+# added 2024/06/9
+
+load("train_data_transformations_V2_with2653vars.Rda")
+
+# redefine predictors
+predictors <- train_data_trans %>%
+  dplyr::select(-bias, -outgroup_att, -Outgroup) %>%
+  as.matrix()
+
+# Register parallel backend
+cl <- makeCluster(detectCores() - 1) # leave one core free
+registerDoParallel(cl)
+
+# cross-validation for elastic net
+cv_fit <- cv.glmnet(x=predictors, y=outcome_outgroup_att, alpha=0.7, parallel=TRUE)
+
+# best lambda
+best_lambda <- cv_fit$lambda.min
+
+# fit final model
+elastic_net_model <- glmnet(x=predictors, y=outcome_outgroup_att, alpha = 0.7, lambda=best_lambda)
+
+# Stop the cluster
+stopCluster(cl)
+
+# Summary of the model
+print(elastic_net_model$beta)
+
+# order by abs magnitude of weight
+elastic_net_weights <- matrix(elastic_net_model$beta, dimnames=elastic_net_model$beta@Dimnames)
+elastic_net_weights <- as.data.frame(elastic_net_weights)
+elastic_net_weights <- cbind(rownames(elastic_net_weights), data.frame(elastic_net_weights, row.names=NULL))
+names(elastic_net_weights) <- c("Variable","ParamWeight")
+elastic_net_weights <- elastic_net_weights[order(abs(elastic_net_weights$ParamWeight), decreasing=T), ]
+
+write_csv(elastic_net_weights, file="output/ElasticNet_OutgroupAttitudes_ParameterWeights_Transformed_V2_with2653preds.csv")
+
+
+
+#~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~#
+
+# APPLY VAR TRANSFORMATIONS (alllll 2750 raw) -----------------------------
+
+# added 2024/06/10
+
+load("train_data_transformations_V3_with2750vars.Rda")
+
+# redefine predictors
+predictors <- train_data_trans %>%
+  dplyr::select(-bias, -outgroup_att, -Outgroup) %>%
+  as.matrix()
+
+# Register parallel backend
+cl <- makeCluster(detectCores() - 1) # leave one core free
+registerDoParallel(cl)
+
+# cross-validation for elastic net
+cv_fit <- cv.glmnet(x=predictors, y=outcome_outgroup_att, alpha=0.7, parallel=TRUE)
+
+# best lambda
+best_lambda <- cv_fit$lambda.min
+
+# fit final model
+elastic_net_model <- glmnet(x=predictors, y=outcome_outgroup_att, alpha = 0.7, lambda=best_lambda)
+
+# Stop the cluster
+stopCluster(cl)
+
+# Summary of the model
+print(elastic_net_model$beta)
+
+# order by abs magnitude of weight
+elastic_net_weights <- matrix(elastic_net_model$beta, dimnames=elastic_net_model$beta@Dimnames)
+elastic_net_weights <- as.data.frame(elastic_net_weights)
+elastic_net_weights <- cbind(rownames(elastic_net_weights), data.frame(elastic_net_weights, row.names=NULL))
+names(elastic_net_weights) <- c("Variable","ParamWeight")
+elastic_net_weights <- elastic_net_weights[order(abs(elastic_net_weights$ParamWeight), decreasing=T), ]
+
+write_csv(elastic_net_weights, file="output/ElasticNet_NOTmultilevel_OutgroupAtt_Transformed_with2750preds.csv")

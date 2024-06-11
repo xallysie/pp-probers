@@ -1,0 +1,2 @@
+Time,Model,Description,Weights,mean_rmse,mean_adj_r_squared
+2024-06-09T21:08:26Z,bias ~ generalized + symbolic + contact_quality + contact_friendsz + identification_selfinvestment,bias_ols_weighted,"0.12,0.173,0.209,0.119,0.523",0.8727485008791175,0.5983206320656498
