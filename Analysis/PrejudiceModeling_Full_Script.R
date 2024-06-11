@@ -13,10 +13,12 @@ library(foreach)    # foreach() function
 library(doParallel) # parallel computing
 library(parallel)   # parallel computing
 library(furrr)      # parallel computing
-library(caret)      # for cross-validation
-library(MuMIn)      # for model evaluation
+library(caret)      # cross-validation
+library(MuMIn)      # model evaluation
 library(mgcv)       # general additive models
-#library(randomForest) # for random forests 
+library(MASS)       # robust linear models
+select <- dplyr::select
+#library(randomForest) # random forests 
 
 setwd(dirname(rstudioapi::getActiveDocumentContext()$path)) 
 set.seed(57812623)
@@ -141,6 +143,28 @@ ols_regression_fit <- function(data, formula_str, weights=NULL, ...){
   return(model)
 }
 
+# ols regression revised to assess avg model performance across clusters
+ols_regression_fit <- function(data, formula_str, cluster_name, weights=NULL, ...){
+  results <- as.data.frame(matrix(ncol=3,nrow=length(levels(as.factor(data[[cluster_name]])))))
+  names(results) <- c("Outgroup", "RMSE", "Adj_R_sq")
+  results[[1]] <- levels(as.factor(data[[cluster_name]]))
+  .formula <- as.formula(formula_str)
+  xvars <- ### CONTINUE HERE
+  yvar <- str_split(gsub(" ", "", formula_str), "~")[[1]][1]
+    weights
+  
+  if (is.null(weights)) {
+    model <- lm(formula = .formula, data=data)
+  } else {
+    predictor_vars <- all.vars(.formula)[-1] # get predictor variables from formula
+    predictors <- data[, predictor_vars, drop=FALSE]
+    weighted_preds <- sapply(seq_along(weights), function(x) {predictors[,x]*weights[x]})
+    weights_preds_sum <- rowSums(data.frame(weighted_preds))
+    model <- lm(formula = .formula, data=data, weights=abs(weights_preds_sum))
+  }
+  return(model)
+}
+
 # mixed-effects models
 lmer_regression_fit <- function(data, formula_str, weights=NULL, ...){
   .formula <- as.formula(formula_str)
@@ -156,25 +180,53 @@ lmer_regression_fit <- function(data, formula_str, weights=NULL, ...){
   return(model)
 }
 
+# robust linear models
+rlm_regression_fit <- function(data, formula_str, weights=NULL, ...){
+  .formula <- as.formula(formula_str)
+  if (is.null(weights)) {
+    model <- rlm(formula = .formula, data=data,
+                 method=c("M"),
+                 wt.method = c("inv.var"),
+                 model = TRUE, x.ret = TRUE, y.ret = FALSE, contrasts = NULL)
+  } else {
+    predictor_vars <- all.vars(.formula)[-1] # get predictor variables from formula
+    predictors <- data[, predictor_vars, drop=FALSE]
+    weighted_preds <- sapply(seq_along(weights), function(x) {predictors[,x]*weights[x]})
+    weights_preds_sum <- rowSums(data.frame(weighted_preds))
+    model <- rlm(formula = .formula, data=data, weights=abs(weights_preds_sum),
+                      method=c("M"),
+                      wt.method = c("inv.var"),
+                      model = TRUE, x.ret = TRUE, y.ret = FALSE, contrasts = NULL)
+  }
+  return(model)
+}
 # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~#
 # functions for model evaluation ------------------------------------------
 
 # define wrapper function to evaluate models
-evaluate_model <- function(model, val_fold, outcome_var) {
+evaluate_model <- function(model, val_fold, outcome_var, cluster_name) {
   val_predictions <- predict(model, newdata = val_fold, allow.new.levels = TRUE) # fit model on validation dataset
-  
+
   # calculate root mean squared error
   val_rmse <- sqrt(mean((val_predictions - val_fold[[outcome_var]])^2)) # obtain RMSE on validation dataset
   
   # calculate adjusted R-squared based on model type 
   # **CHANGEME** if you add different types of models not shown here, please adjust this to recognize your model type
-  if (inherits(model, "lm")) { # if linear regression
+  if (inherits(model, "lm") && !"rlm" %in% class(model)) { # if linear regression and NOT robust method
     val_adj_r_squared <- summary(model)$adj.r.squared
   } else if (inherits(model, "lmerMod")) { # if mixed-effects model
     val_adj_r_squared <- r.squaredGLMM(model)[2] # get conditional r-squared
   } else if (inherits(model, "randomForest")) {
     val_adj_r_squared <- 1 - (sum((val_predictions - val_fold[[outcome_var]])^2) / 
                                 sum((val_fold[[outcome_var]] - mean(val_fold[[outcome_var]]))^2))
+  } else if (inherits(model, "rlm")) { # if robust linear regression
+    resids <- val_predictions - val_fold[[outcome_var]] # residuals
+    rss <- sum(resids^2) # residual sum of squares
+    tss <- sum((val_fold[[outcome_var]] - mean(val_fold[[outcome_var]]))^2) # total sum of squares
+    r_squared <- 1 - (rss/tss) # calculate r-squared
+    n <- nrow(val_fold) # number of observations
+    p <- length(coef(model)) - 1 # number of predictors (subtract 1 for intercept)
+    val_adj_r_squared <- 1 - ((1 - r_squared) * (n - 1) / (n - p - 1))
   } else {
     val_adj_r_squared <- NA # **CHANGEME** update this if you add different types of models not shown here
     print("could not detect model type")
@@ -317,6 +369,16 @@ results <- evaluate_models_loo( # leave-one-out cv
   description = "bias ~ .120*generalized + .173*symbolic + .209*contact_quality + .119*contact_friendsz + .523*identification_selfinvestment", 
   weights = c(.120, .173, .209, .119, .523),
   model_function = ols_regression_fit)
+
+# example usage with robust linear model
+results <- evaluate_models_kfold( # k-fold cv
+  data = train_data,
+  outcome_var = "bias", 
+  formula_str = "bias ~ generalized + symbolic + contact_quality + contact_friendsz + identification_selfinvestment", 
+  description = "bias ~ .120*generalized + .173*symbolic + .209*contact_quality + .119*contact_friendsz + .523*identification_selfinvestment", 
+  weights = c(.120, .173, .209, .119, .523),
+  model_function = rlm_regression_fit,
+  k = 20)
 
 # example usage with linear mixed-effects model
 #results <- evaluate_models_kfold(
@@ -475,10 +537,11 @@ old_variables_dropped <- variables_to_consider_1 %>%
   filter(!Variable %in% variables_to_consider_2$Variable)
 
 variables_to_consider <- rbind(variables_to_consider_2, old_variables_dropped) %>%
-  rbind(c("extreme_proportion_q_gmc",.005),c("item_variances_gmc",.005))
+  rbind(c("extreme_proportion_q_gmc",.005),c("item_variances_gmc",.005)) %>%
+  mutate(ParamWeight= as.numeric(ParamWeight))
 
 train_data_trans_subset <- train_data_trans %>%
-  select(Outgroup, bias, all_of(variables_to_consider$Variable))
+  dplyr::select(Outgroup, bias, all_of(variables_to_consider$Variable))
 
 # try unweighted model
 test_unweighted <- single_run(
@@ -499,7 +562,15 @@ test_weighted <- single_run(
   weights = variables_to_consider$ParamWeight,
   description = "bias_ols_weighted with 70 vars retained from elastic net", 
   k=20) 
-
+# try robust ver
+test_unweighted_r <- single_run(
+  data = train_data_trans_subset,
+  outcome_var = "bias", 
+  formula_str = paste("bias ~", paste(variables_to_consider$Variable, collapse = " + ")),
+  model_function = rlm_regression_fit,
+  cv_function = evaluate_models_kfold,
+  description = "bias_rlm_unweighted with 70 vars retained from elastic net", 
+  k=20) 
 
 
 # BIAS MODEL 2.5B 
@@ -837,7 +908,9 @@ test_unweighted <- single_run(
   model_function = ols_regression_fit,
   cv_function = evaluate_models_kfold,
   description = "outgroup_att_ols_unweighted with 70 vars retained from elastic net", 
-  k=20)
+  k=20) # rmse = .723, adjr = .674
+
+
 
 # try weighted model
 test_unweighted <- single_run(
@@ -895,6 +968,29 @@ test_unweighted <- single_run(
   cv_function = evaluate_models_kfold,
   description = "outgroup_att_ols_unweighted with 70 vars retained from elastic net", 
   k=20)
+
+
+# get coefs separately for each group -------------------------------------
+
+coefsss <- list()
+for (k in train_data_trans_subset[["Outgroup"]]){
+  coeffs.df <- data.frame(matrix(ncol=3,nrow=length(variables_to_consider$Variable)-3))
+  names(coeffs.df) <- c("Outgroup","Variable","Coefficient")
+  coeffs.df$Outgroup <- k
+  dat. <- train_data_trans_subset[train_data_trans_subset[["Outgroup"]] == k,]
+  model. <- lm(formula = paste("bias ~", paste(variables_to_consider$Variable, collapse = " + ")),
+            data=dat.)
+  coeffs.df$Variable <- rownames(summary(model.)$coefficients[-1,])
+  coeffs.df$Coefficient <- data.frame(summary(model.)$coefficients[-1,])$Estimate
+  coefsss[[k]] <- coeffs.df
+}
+coefficientz <- do.call(rbind, coefsss)
+coefficientz.summary <- coefficientz %>%
+  group_by(Variable) %>%
+  summarize(ParamWeight = mean(Coefficient, na.rm=TRUE))
+
+
+
 # test models with paper_data ---------------------------------------------
 
 paper_data <- list.files(path = "../TrainingData/paper_data/", pattern = "*.csv") %>% 
